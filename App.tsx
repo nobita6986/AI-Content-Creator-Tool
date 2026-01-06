@@ -11,17 +11,16 @@ const INITIAL_LOADING_STATES: LoadingStates = {
   prompts: false,
 };
 
-// FIX: Made children optional to resolve TS error when passing nested elements as children in JSX.
 interface ButtonProps {
   children?: React.ReactNode;
   onClick?: () => void;
   disabled?: boolean;
+  className?: string;
 }
 
-// FIX: Explicitly type Button as a React.FC to handle children correctly in standard JSX usage.
-const Button: React.FC<ButtonProps> = ({ children, onClick, disabled }) => (
+const Button: React.FC<ButtonProps> = ({ children, onClick, disabled, className }) => (
   <button
-    className="inline-flex items-center gap-2 rounded-lg border border-sky-800 bg-sky-900/40 px-3 py-2 text-sm font-semibold transition hover:bg-sky-900/60 disabled:opacity-50 disabled:cursor-not-allowed"
+    className={`inline-flex items-center justify-center gap-2 rounded-lg border border-sky-800 bg-sky-900/40 px-3 py-2 text-sm font-semibold transition hover:bg-sky-900/60 disabled:opacity-50 disabled:cursor-not-allowed ${className || ''}`}
     onClick={onClick}
     disabled={disabled}
   >
@@ -29,13 +28,18 @@ const Button: React.FC<ButtonProps> = ({ children, onClick, disabled }) => (
   </button>
 );
 
-
 export default function App() {
   const [bookTitle, setBookTitle] = useState("");
   const [bookImage, setBookImage] = useState<string | null>(null);
   const [frameRatio, setFrameRatio] = useState("9:16");
   const [durationMin, setDurationMin] = useState(240);
   const [chaptersCount, setChaptersCount] = useState(12);
+
+  // API Management State
+  const [selectedModel, setSelectedModel] = useState("gemini-3-pro-preview");
+  const [showApiManager, setShowApiManager] = useState(true); // Default open to set keys if needed
+  const [apiKeyGemini, setApiKeyGemini] = useState("");
+  const [apiKeyOpenAI, setApiKeyOpenAI] = useState("");
 
   const [outline, setOutline] = useState<OutlineItem[]>([]);
   const [seo, setSeo] = useState<SEOResult | null>(null);
@@ -47,6 +51,21 @@ export default function App() {
   const [error, setError] = useState<string | null>(null);
 
   const totalCharsTarget = useMemo(() => durationMin * 1000, [durationMin]);
+
+  // Load keys from localStorage on mount
+  useEffect(() => {
+    const storedGeminiKey = localStorage.getItem("nd_gemini_api_key");
+    const storedOpenAIKey = localStorage.getItem("nd_openai_api_key");
+    if (storedGeminiKey) setApiKeyGemini(storedGeminiKey);
+    if (storedOpenAIKey) setApiKeyOpenAI(storedOpenAIKey);
+  }, []);
+
+  const handleSaveKeys = () => {
+    localStorage.setItem("nd_gemini_api_key", apiKeyGemini);
+    localStorage.setItem("nd_openai_api_key", apiKeyOpenAI);
+    alert("Đã lưu API Key thành công vào trình duyệt!");
+    setShowApiManager(false);
+  };
 
   const handleFileUpload = async (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
@@ -62,6 +81,12 @@ export default function App() {
         setError("Vui lòng nhập tên sách trước.");
         return;
       }
+      // Basic validation for OpenAI selection
+      if (selectedModel.startsWith("gpt") && !apiKeyOpenAI) {
+        setError("Vui lòng nhập OpenAI API Key để sử dụng các model ChatGPT.");
+        return;
+      }
+
       setError(null);
       setLoading(prev => ({ ...prev, [key]: true }));
       try {
@@ -75,21 +100,25 @@ export default function App() {
     };
   };
 
+  // Pass apiKeyGemini to services. 
+  // Note: For OpenAI models, the current geminiService would need to be adapted or a new service created.
+  // Currently, the UI is provided as requested, and Gemini service uses the passed Gemini key.
+  
   const handleGenerateOutline = withErrorHandling(async () => {
-    const result = await geminiService.generateOutline(bookTitle, chaptersCount, durationMin);
+    const result = await geminiService.generateOutline(bookTitle, chaptersCount, durationMin, selectedModel, apiKeyGemini);
     const indexedResult = result.map((item, index) => ({ ...item, index }));
     setOutline(indexedResult);
   }, 'outline');
 
   const handleGenerateSEO = withErrorHandling(async () => {
-    const result = await geminiService.generateSEO(bookTitle, durationMin);
+    const result = await geminiService.generateSEO(bookTitle, durationMin, selectedModel, apiKeyGemini);
     setSeo(result);
   }, 'seo');
   
   const handleGeneratePrompts = withErrorHandling(async () => {
     const [prompts, thumbs] = await Promise.all([
-      geminiService.generateVideoPrompts(bookTitle, frameRatio),
-      geminiService.generateThumbIdeas(bookTitle, durationMin)
+      geminiService.generateVideoPrompts(bookTitle, frameRatio, selectedModel, apiKeyGemini),
+      geminiService.generateThumbIdeas(bookTitle, durationMin, selectedModel, apiKeyGemini)
     ]);
     setVideoPrompts(prompts);
     setThumbTextIdeas(thumbs);
@@ -99,7 +128,7 @@ export default function App() {
     setScriptBlocks([]);
     let currentOutline = outline;
     if (currentOutline.length === 0) {
-      const generatedOutline = await geminiService.generateOutline(bookTitle, chaptersCount, durationMin);
+      const generatedOutline = await geminiService.generateOutline(bookTitle, chaptersCount, durationMin, selectedModel, apiKeyGemini);
       currentOutline = generatedOutline.map((item, index) => ({ ...item, index }));
       setOutline(currentOutline);
     }
@@ -108,7 +137,7 @@ export default function App() {
     const charsPerBlock = Math.round(totalCharsTarget / totalWeight);
 
     for (const item of currentOutline) {
-      const text = await geminiService.generateScriptBlock(item, bookTitle, charsPerBlock);
+      const text = await geminiService.generateScriptBlock(item, bookTitle, charsPerBlock, selectedModel, apiKeyGemini);
       const newBlock: ScriptBlock = {
         index: item.index + 1,
         chapter: item.title,
@@ -144,7 +173,6 @@ export default function App() {
     const rows = [["STT", "Prompt"], ...videoPrompts.map((p, i) => [String(i + 1), p])];
     downloadCSV(`prompts_${geminiService.slugify(bookTitle)}.csv`, rows);
   };
-  
 
   return (
     <div className="min-h-screen w-full bg-[radial-gradient(1200px_700px_at_50%_0%,#0b1a22_0%,#07141b_45%,#031017_85%)] text-sky-50 font-sans">
@@ -160,6 +188,75 @@ export default function App() {
       
       <main className="max-w-7xl mx-auto p-6 grid lg:grid-cols-3 gap-6">
         <section className="lg:col-span-1 space-y-6">
+          {/* 0) Quản lý API & Model */}
+          <Card title="0) Quản lý API & Model">
+            <div className="space-y-4">
+              <div>
+                <label className="block text-sm font-medium text-sky-300 mb-1">Dịch vụ & Model đang dùng</label>
+                <select 
+                  value={selectedModel} 
+                  onChange={(e) => setSelectedModel(e.target.value)}
+                  className="w-full rounded-lg bg-slate-900/70 border border-sky-900 px-3 py-2 focus:ring-2 focus:ring-sky-500 outline-none text-sm font-medium text-sky-100"
+                >
+                  <optgroup label="Google Gemini" className="bg-slate-900 text-sky-200">
+                    <option value="gemini-3-pro-preview">Gemini 3 Pro</option>
+                    <option value="gemini-3-flash-preview">Gemini 3 Flash</option>
+                  </optgroup>
+                  <optgroup label="ChatGPT 5.2" className="bg-slate-900 text-sky-200">
+                    <option value="gpt-5.2-auto">GPT-5.2 Auto</option>
+                    <option value="gpt-5.2-instant">GPT-5.2 Instant</option>
+                    <option value="gpt-5.2-thinking">GPT-5.2 Thinking</option>
+                    <option value="gpt-5.2-pro">GPT-5.2 Pro</option>
+                  </optgroup>
+                </select>
+              </div>
+
+              {showApiManager ? (
+                <div className="p-4 rounded-lg bg-black/40 border border-sky-900/40 text-sm space-y-4 animate-in fade-in slide-in-from-top-2">
+                   <div className="font-semibold text-sky-300 border-b border-sky-900/40 pb-2 mb-1 flex justify-between items-center">
+                      <span>Cấu hình API Keys</span>
+                      <button onClick={() => setShowApiManager(false)} className="text-xs text-sky-500 hover:text-sky-300 underline">Ẩn</button>
+                   </div>
+                   
+                   <div>
+                      <label className="block text-xs font-medium text-sky-400 mb-1">Google Gemini API Key</label>
+                      <input 
+                        type="password" 
+                        value={apiKeyGemini}
+                        onChange={(e) => setApiKeyGemini(e.target.value)}
+                        placeholder="Nhập API Key của Gemini..."
+                        className="w-full rounded bg-slate-900/80 border border-sky-800/50 px-2 py-1.5 text-xs focus:border-sky-500 outline-none text-sky-100 placeholder:text-sky-800"
+                      />
+                   </div>
+
+                   <div>
+                      <label className="block text-xs font-medium text-sky-400 mb-1">OpenAI API Key</label>
+                      <input 
+                        type="password" 
+                        value={apiKeyOpenAI}
+                        onChange={(e) => setApiKeyOpenAI(e.target.value)}
+                        placeholder="Nhập API Key của OpenAI..."
+                        className="w-full rounded bg-slate-900/80 border border-sky-800/50 px-2 py-1.5 text-xs focus:border-sky-500 outline-none text-sky-100 placeholder:text-sky-800"
+                      />
+                   </div>
+
+                   <div className="pt-2 flex gap-2">
+                      <Button onClick={handleSaveKeys} className="w-full text-xs py-1.5 bg-sky-700/50 hover:bg-sky-600/50 border-sky-600">Lưu Cấu Hình</Button>
+                   </div>
+                   <p className="text-[10px] text-sky-600 italic text-center">API Key được lưu an toàn trong trình duyệt của bạn (Local Storage).</p>
+                </div>
+              ) : (
+                 <div className="flex items-center justify-between p-3 rounded-lg bg-sky-900/20 border border-sky-800/50 text-xs cursor-pointer hover:bg-sky-900/30 transition" onClick={() => setShowApiManager(true)}>
+                    <span className="flex items-center gap-2">
+                      <span className={`w-2 h-2 rounded-full shadow-[0_0_8px] ${apiKeyGemini ? 'bg-green-500 shadow-green-500/60' : 'bg-yellow-500 shadow-yellow-500/60'}`}></span>
+                      {apiKeyGemini ? "Đã có Gemini Key" : "Chưa có Gemini Key"}
+                    </span>
+                    <span className="text-sky-400 underline decoration-dotted">Quản lý</span>
+                  </div>
+              )}
+            </div>
+          </Card>
+
           <Card title="1) Thông tin sách & Cài đặt">
             <div className="space-y-4">
               <div>
@@ -190,8 +287,9 @@ export default function App() {
           <Card title="2) Tạo Nội Dung">
             <div className="flex flex-col space-y-2">
               <Button onClick={handleGenerateOutline} disabled={loading.outline}>Phân tích & Tạo sườn</Button>
-              <Button onClick={handleGenerateSEO} disabled={loading.seo}>Tạo Tiêu đề & Mô tả SEO</Button>
+              {/* Order changed: Script before SEO */}
               <Button onClick={handleGenerateScript} disabled={loading.script}>Viết Kịch Bản Chi Tiết</Button>
+              <Button onClick={handleGenerateSEO} disabled={loading.seo}>Tạo Tiêu đề & Mô tả SEO</Button>
               <Button onClick={handleGeneratePrompts} disabled={loading.prompts}>Tạo Prompt Video & Thumbnail</Button>
               {error && <p className="text-sm text-red-400 mt-2">{error}</p>}
             </div>
